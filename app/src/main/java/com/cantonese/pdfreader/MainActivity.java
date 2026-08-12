@@ -1,6 +1,7 @@
 package com.cantonese.pdfreader;
 
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -13,7 +14,6 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
 
-import java.util.HashMap;
 import java.util.Locale;
 
 public class MainActivity extends Activity implements TextToSpeech.OnInitListener {
@@ -23,7 +23,8 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     private TextToSpeech tts;
     private boolean ttsReady = false;
 
-    @Override protected void onCreate(Bundle savedInstanceState) {
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         tts = new TextToSpeech(this, this);
 
@@ -37,23 +38,59 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         s.setAllowContentAccess(true);
         s.setMediaPlaybackRequiresUserGesture(false);
 
+        // The app UI is loaded from file:///android_asset while PDF.js is loaded over HTTPS.
+        // Some Android WebView versions block that cross-origin module request unless this is enabled.
+        s.setAllowFileAccessFromFileURLs(true);
+        s.setAllowUniversalAccessFromFileURLs(true);
+
         webView.addJavascriptInterface(new AndroidTTSBridge(), "AndroidTTS");
         webView.setWebViewClient(new WebViewClient());
         webView.setWebChromeClient(new WebChromeClient() {
-            @Override public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
-                if (fileCallback != null) fileCallback.onReceiveValue(null);
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
+                if (fileCallback != null) {
+                    fileCallback.onReceiveValue(null);
+                }
                 fileCallback = callback;
-                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                intent.addCategory(Intent.CATEGORY_OPENABLE);
-                intent.setType("application/pdf");
-                startActivityForResult(intent, FILE_CHOOSER);
+
+                Intent intent;
+                try {
+                    intent = params.createIntent();
+                    intent.setType("application/pdf");
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    startActivityForResult(intent, FILE_CHOOSER);
+                } catch (Exception firstError) {
+                    try {
+                        intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                        intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.setType("application/pdf");
+                        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                        startActivityForResult(intent, FILE_CHOOSER);
+                    } catch (ActivityNotFoundException secondError) {
+                        try {
+                            intent = new Intent(Intent.ACTION_GET_CONTENT);
+                            intent.addCategory(Intent.CATEGORY_OPENABLE);
+                            intent.setType("application/pdf");
+                            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                            startActivityForResult(Intent.createChooser(intent, "選擇 PDF 檔案"), FILE_CHOOSER);
+                        } catch (Exception finalError) {
+                            fileCallback.onReceiveValue(null);
+                            fileCallback = null;
+                            Toast.makeText(MainActivity.this, "無法開啟 PDF 檔案選擇器", Toast.LENGTH_LONG).show();
+                            return false;
+                        }
+                    }
+                }
                 return true;
             }
         });
+
         webView.loadUrl("file:///android_asset/index.html");
     }
 
-    @Override public void onInit(int status) {
+    @Override
+    public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
             int result = tts.setLanguage(new Locale("zh", "HK"));
             ttsReady = result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED;
@@ -62,13 +99,18 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
                 ttsReady = true;
             }
             tts.setOnUtteranceProgressListener(new android.speech.tts.UtteranceProgressListener() {
-                @Override public void onStart(String utteranceId) {
+                @Override
+                public void onStart(String utteranceId) {
                     runOnUiThread(() -> webView.evaluateJavascript("window.__androidTTSStarted && window.__androidTTSStarted()", null));
                 }
-                @Override public void onDone(String utteranceId) {
+
+                @Override
+                public void onDone(String utteranceId) {
                     runOnUiThread(() -> webView.evaluateJavascript("window.__androidTTSFinished && window.__androidTTSFinished()", null));
                 }
-                @Override public void onError(String utteranceId) {
+
+                @Override
+                public void onError(String utteranceId) {
                     runOnUiThread(() -> webView.evaluateJavascript("window.__androidTTSError && window.__androidTTSError()", null));
                 }
             });
@@ -76,9 +118,13 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     }
 
     public class AndroidTTSBridge {
-        @JavascriptInterface public boolean isAvailable() { return ttsReady; }
+        @JavascriptInterface
+        public boolean isAvailable() {
+            return ttsReady;
+        }
 
-        @JavascriptInterface public void speak(String text, float rate) {
+        @JavascriptInterface
+        public void speak(String text, float rate) {
             runOnUiThread(() -> {
                 if (!ttsReady || text == null || text.trim().isEmpty()) return;
                 tts.stop();
@@ -88,27 +134,57 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
             });
         }
 
-        @JavascriptInterface public void stop() {
-            runOnUiThread(() -> { if (tts != null) tts.stop(); });
+        @JavascriptInterface
+        public void stop() {
+            runOnUiThread(() -> {
+                if (tts != null) tts.stop();
+            });
         }
     }
 
-    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == FILE_CHOOSER && fileCallback != null) {
-            Uri[] result = null;
-            if (resultCode == RESULT_OK && data != null && data.getData() != null) result = new Uri[]{data.getData()};
-            fileCallback.onReceiveValue(result);
+
+        if (requestCode != FILE_CHOOSER || fileCallback == null) return;
+
+        Uri[] result = null;
+        if (resultCode == RESULT_OK && data != null) {
+            Uri uri = data.getData();
+            if (uri != null) {
+                try {
+                    final int takeFlags = data.getFlags() &
+                            (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    getContentResolver().takePersistableUriPermission(uri, takeFlags & Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (Exception ignored) {
+                    // Some providers do not offer persistable permissions; temporary read access is enough.
+                }
+                result = new Uri[]{uri};
+            } else if (data.getClipData() != null && data.getClipData().getItemCount() > 0) {
+                result = new Uri[]{data.getClipData().getItemAt(0).getUri()};
+            }
+        }
+
+        fileCallback.onReceiveValue(result);
+        fileCallback = null;
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (webView.canGoBack()) webView.goBack();
+        else super.onBackPressed();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (fileCallback != null) {
+            fileCallback.onReceiveValue(null);
             fileCallback = null;
         }
-    }
-
-    @Override public void onBackPressed() {
-        if (webView.canGoBack()) webView.goBack(); else super.onBackPressed();
-    }
-
-    @Override protected void onDestroy() {
-        if (tts != null) { tts.stop(); tts.shutdown(); }
+        if (tts != null) {
+            tts.stop();
+            tts.shutdown();
+        }
         if (webView != null) webView.destroy();
         super.onDestroy();
     }
