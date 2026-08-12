@@ -1,0 +1,11 @@
+{
+  "name": "香港廣東話 PDF 聽書器",
+  "short_name": "粵語聽書器",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#07101f",
+  "theme_color": "#0b1120",
+  "lang": "zh-HK",
+  "description": "將中文 PDF 轉成香港廣東話朗讀。",
+  "icons": []
+}
